@@ -1,0 +1,9 @@
+{
+  "name": "Family Board Pro",
+  "description": "Application Android de gestion familiale. Encouragez les bons comportements avec un système de points, agenda et coaching parental.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
