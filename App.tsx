@@ -11,11 +11,12 @@ import {
   Palette, Info, HelpCircle, AlertCircle, StickyNote as NoteIcon,
   Calendar, Clock, Mail, LogOut, UserPlus, Bell, CheckCircle2,
   ChevronLeft, Archive, Bookmark, RefreshCcw, Volume2, Pin, PinOff, Tag, Upload, 
-  Dumbbell, TargetIcon, Smile, TrendingUp, TrendingDown, Eye, EyeOff, ThumbsUp, ThumbsDown, Cloud, CloudOff, Loader2
+  Dumbbell, TargetIcon, Smile, TrendingUp, TrendingDown, Eye, EyeOff, ThumbsUp, ThumbsDown, Cloud, CloudOff, Loader2,
+  Shield, WifiOff
 } from 'lucide-react';
-import { Child, AppConfig, AgendaEntry, StickyNote, UserAccount, PointLog, NoteSection } from './types';
+import { Child, AppConfig, AgendaEntry, StickyNote, UserAccount } from './types';
 import { ChildCard } from './components/ChildCard';
-import { supabase, testConnection, fetchFamilyData, createFamily } from './services/supabaseClient';
+import { supabase, fetchFamilyData, createFamily } from './services/supabaseClient';
 
 const PREDEFINED_AVATARS = [
   'https://picsum.photos/id/64/200', 'https://picsum.photos/id/65/200', 'https://picsum.photos/id/66/200',
@@ -50,7 +51,9 @@ const App: React.FC = () => {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authConfirmPassword, setAuthConfirmPassword] = useState("");
   const [authFamilyName, setAuthFamilyName] = useState("");
+  const [authError, setAuthError] = useState("");
   const [familyId, setFamilyId] = useState<string | null>(null);
 
   const todayStr = new Date().toISOString().split('T')[0];
@@ -61,30 +64,22 @@ const App: React.FC = () => {
   const [agenda, setAgenda] = useState<AgendaEntry[]>([]);
   const [notes, setNotes] = useState<StickyNote[]>([]);
   const [activeView, setActiveView] = useState<'board' | 'agenda' | 'notes' | 'parents' | 'admin'>('board');
-  const [selectedAgendaDate, setSelectedAgendaDate] = useState(todayStr);
-  const [currentDate, setCurrentDate] = useState(new Date());
   
   // Modals
   const [isNewChildOpen, setIsNewChildOpen] = useState(false);
   const [newChildData, setNewChildData] = useState({ 
     name: '', age: 6, passion: '', favoriteAnimal: '', dreamJob: '', avatar: PREDEFINED_AVATARS[0], cardBackground: ''
   });
-  const [isAddEventOpen, setIsAddEventOpen] = useState(false);
-  const [newEventData, setNewEventData] = useState({ title: '', description: '', date: '', time: '18:00' });
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
   const [newNoteData, setNewNoteData] = useState({ text: '', color: NOTE_COLORS[0] });
-  const [selectedChild, setSelectedChild] = useState<Child | null>(null);
 
-  const alarmAudio = useRef<HTMLAudioElement | null>(null);
-
-  // --- 1. INITIALISATION & AUTH CHECK ---
+  // --- INITIALISATION ---
   useEffect(() => {
     if (!supabase) {
       setIsLoading(false);
       return;
     }
 
-    // Gérer la session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) handlePostLogin(session.user.email!);
@@ -97,6 +92,7 @@ const App: React.FC = () => {
       else {
         setUser(null);
         setIsLoading(false);
+        setIsCloudActive(false);
       }
     });
 
@@ -105,6 +101,7 @@ const App: React.FC = () => {
 
   const handlePostLogin = async (email: string) => {
     setIsLoading(true);
+    setAuthError("");
     try {
       const data = await fetchFamilyData(email);
       if (data) {
@@ -115,34 +112,73 @@ const App: React.FC = () => {
         setNotes(data.notes as any);
         setIsCloudActive(true);
       } else {
-        // Cas où l'auth existe mais pas l'entrée famille (rare)
-        setUser({ email, familyName: "Ma Famille", isAuthenticated: true });
+        // Utilisateur sans famille créée (bug ou inscription interrompue)
+        setUser({ email, familyName: "Configuration requise", isAuthenticated: true });
+        setIsCloudActive(false);
       }
-    } catch (err) {
-      console.error("Sync Error:", err);
+    } catch (err: any) {
+      setAuthError(`Erreur Sync: ${err.message}`);
+      setIsCloudActive(false);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // --- 2. ACTIONS AUTH ---
+  // --- ACTIONS AUTH ---
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!supabase) return;
-    setIsLoading(true);
+    setAuthError("");
+    if (!supabase) {
+      setAuthError("Configuration Supabase manquante. Vérifiez vos variables d'environnement.");
+      return;
+    }
 
+    if (authMode === 'register') {
+      if (authPassword !== authConfirmPassword) {
+        setAuthError("Les mots de passe ne correspondent pas.");
+        return;
+      }
+      if (authPassword.length < 6) {
+        setAuthError("Le mot de passe doit faire au moins 6 caractères.");
+        return;
+      }
+    }
+
+    setIsLoading(true);
     try {
       if (authMode === 'register') {
-        const { data, error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
-        if (error) throw error;
-        // Créer la famille dans la foulée
+        const { error: signUpError } = await supabase.auth.signUp({ 
+          email: authEmail, 
+          password: authPassword,
+          options: { data: { family_name: authFamilyName } }
+        });
+        if (signUpError) throw signUpError;
+        
+        // Créer l'entrée famille immédiatement
         await createFamily(authEmail, authFamilyName || "Ma Famille");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
-        if (error) throw error;
+        const { error: signInError } = await supabase.auth.signInWithPassword({ 
+          email: authEmail, 
+          password: authPassword 
+        });
+        if (signInError) throw signInError;
       }
     } catch (err: any) {
-      alert(err.message);
+      setAuthError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Bouton de secours si la famille n'a pas été créée
+  const handleManualFamilyCreation = async () => {
+    if (!user?.email || !authFamilyName) return;
+    setIsLoading(true);
+    try {
+      await createFamily(user.email, authFamilyName);
+      await handlePostLogin(user.email);
+    } catch (err: any) {
+      setAuthError(`Échec de l'initialisation: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -154,14 +190,14 @@ const App: React.FC = () => {
     setChildren([]);
     setAgenda([]);
     setNotes([]);
+    setFamilyId(null);
   };
 
-  // --- 3. SYNCHRONISATION DES ACTIONS (OPTIMISTE) ---
   const handleAddChildForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newChildData.name.trim() || !familyId) return;
 
-    const newChild: Partial<Child> = {
+    const newChild = {
       ...newChildData,
       score: 0,
       dailyChallenges: [],
@@ -171,17 +207,16 @@ const App: React.FC = () => {
       isTimerRunning: false,
     };
 
-    // Optimiste
     const tempId = crypto.randomUUID();
-    const optimisticChild = { ...newChild, id: tempId } as Child;
-    setChildren([...children, optimisticChild]);
+    setChildren(prev => [...prev, { ...newChild, id: tempId } as Child]);
     setIsNewChildOpen(false);
 
-    // Cloud
     if (supabase) {
       const { data, error } = await supabase.from('children').insert([{ ...newChild, family_id: familyId }]).select().single();
       if (!error) {
         setChildren(prev => prev.map(c => c.id === tempId ? data : c));
+      } else {
+        setAuthError(`Erreur Cloud: ${error.message}`);
       }
     }
   };
@@ -189,39 +224,16 @@ const App: React.FC = () => {
   const handlePointAction = async (childId: string, points: number, reason: string) => {
     const child = children.find(c => c.id === childId);
     if (!child) return;
-
     const newScore = Math.max(0, child.score + points);
+    setChildren(prev => prev.map(c => c.id === childId ? { ...c, score: newScore } : c));
     
-    // Optimiste
-    setChildren(children.map(c => c.id === childId ? { ...c, score: newScore } : c));
-
-    // Cloud
     if (supabase) {
-      await supabase.from('children').update({ score: newScore }).eq('id', childId);
-      await supabase.from('point_history').insert([{ 
-        child_id: childId, 
-        type: points >= 0 ? 'positive' : 'negative', 
-        reason, 
-        points 
-      }]);
-    }
-  };
-
-  const handleAddNoteSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newNoteData.text || !familyId) return;
-
-    const newNote = { ...newNoteData, isPinned: false, isArchived: false, family_id: familyId };
-    
-    // Optimiste
-    const tempId = crypto.randomUUID();
-    setNotes([{ ...newNote, id: tempId, date: Date.now() } as any, ...notes]);
-    setIsAddNoteOpen(false);
-
-    // Cloud
-    if (supabase) {
-      const { data, error } = await supabase.from('sticky_notes').insert([newNote]).select().single();
-      if (!error) setNotes(prev => prev.map(n => n.id === tempId ? data : n));
+      try {
+        await supabase.from('children').update({ score: newScore }).eq('id', childId);
+        await supabase.from('point_history').insert([{ child_id: childId, type: points >= 0 ? 'positive' : 'negative', reason, points }]);
+      } catch (err) {
+        console.error("Failed to sync points:", err);
+      }
     }
   };
 
@@ -230,54 +242,121 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50">
         <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mb-4" />
-        <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Chargement de la session...</p>
+        <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Connexion sécurisée...</p>
+      </div>
+    );
+  }
+
+  // Écran de configuration de secours (si auth OK mais pas de famille)
+  if (user && !familyId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+        <div className="w-full max-w-md bg-white rounded-[3rem] p-10 shadow-2xl space-y-8">
+           <div className="text-center space-y-4">
+             <div className="inline-block p-4 bg-amber-50 text-amber-500 rounded-full animate-bounce"><AlertCircle size={32}/></div>
+             <h2 className="text-2xl font-black uppercase text-slate-800">Presque prêt !</h2>
+             <p className="text-xs font-bold text-slate-400 uppercase">Nous devons initialiser votre espace famille.</p>
+           </div>
+           <div className="space-y-4">
+             <input type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} placeholder="Nom de votre famille" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-indigo-100" />
+             <button onClick={handleManualFamilyCreation} className="w-full dynamic-primary-bg text-white py-5 rounded-2xl font-black uppercase shadow-lg">Créer l'espace</button>
+             <button onClick={handleLogout} className="w-full text-xs font-black uppercase text-slate-400 py-2">Déconnexion</button>
+           </div>
+           {authError && <p className="text-[10px] text-rose-500 font-bold uppercase text-center">{authError}</p>}
+        </div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-        <div className="w-full max-w-md bg-white rounded-[3rem] p-10 shadow-2xl space-y-8 animate-in fade-in zoom-in duration-500">
-          <div className="text-center space-y-2">
-            <div className="inline-block p-4 bg-indigo-50 text-indigo-600 rounded-[2rem] mb-2 animate-bounce">
-              <Sparkles size={32} />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
+        {/* Diagnostic connection */}
+        {!supabase && (
+          <div className="fixed top-6 left-6 right-6 z-[100] p-4 bg-rose-500 text-white rounded-2xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4">
+            <WifiOff size={24}/>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest">Alerte Développeur</p>
+              <p className="text-xs font-bold">Supabase n'est pas configuré. Vérifiez vos clés d'API.</p>
             </div>
-            <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-800">
-              {authMode === 'login' ? 'Bon retour !' : 'Bienvenue !'}
-            </h2>
-            <p className="text-xs font-black text-slate-400 uppercase tracking-widest">
-              {authMode === 'login' ? 'Votre tableau de bord vous attend' : 'Créez votre espace famille'}
-            </p>
+          </div>
+        )}
+
+        <div className="w-full max-w-md bg-white rounded-[3.5rem] p-10 shadow-2xl space-y-8 animate-in fade-in zoom-in duration-700 border border-slate-100 relative">
+          <div className="text-center space-y-4">
+            <div className="inline-block p-5 bg-indigo-50 text-indigo-600 rounded-[2.5rem] mb-2 shadow-inner">
+              <Sparkles size={40} className="animate-pulse" />
+            </div>
+            <div className="space-y-1">
+              <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Bienvenue</h2>
+              <p className="text-sm font-bold text-indigo-500/80 uppercase tracking-widest">Votre Familyteam vous attend</p>
+            </div>
           </div>
 
-          <form onSubmit={handleAuth} className="space-y-6">
+          <form onSubmit={handleAuth} className="space-y-5">
+            {authError && (
+              <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl flex items-center gap-3 animate-in slide-in-from-top-2 overflow-hidden">
+                <AlertCircle size={18} className="text-rose-500 flex-shrink-0" />
+                <p className="text-[11px] font-black uppercase text-rose-600 tracking-tight leading-tight break-words">{authError}</p>
+              </div>
+            )}
+            
             <div className="space-y-4">
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 px-2">Email</label>
-                <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="famille@exemple.com" />
+                <label className="text-[10px] font-black uppercase text-slate-400 px-3">Email</label>
+                <div className="relative">
+                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="votre@email.com" />
+                </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 px-2">Mot de passe</label>
-                <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="••••••••" />
-              </div>
+
               {authMode === 'register' && (
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase text-slate-400 px-2">Nom de la famille</label>
-                  <input required type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Les Martin" />
+                <div className="space-y-1 animate-in fade-in slide-in-from-left-2">
+                  <label className="text-[10px] font-black uppercase text-slate-400 px-3">Nom de famille</label>
+                  <div className="relative">
+                    <Users className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                    <input required type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="Ex: Les Martin" />
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase text-slate-400 px-3">Mot de passe</label>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="••••••••" />
+                </div>
+              </div>
+
+              {authMode === 'register' && (
+                <div className="space-y-1 animate-in fade-in slide-in-from-right-2">
+                  <label className="text-[10px] font-black uppercase text-slate-400 px-3">Confirmer mot de passe</label>
+                  <div className="relative">
+                    <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                    <input required type="password" value={authConfirmPassword} onChange={e => setAuthConfirmPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="••••••••" />
+                  </div>
                 </div>
               )}
             </div>
-            <button type="submit" className="w-full dynamic-primary-bg text-white py-5 rounded-[2rem] font-black uppercase shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
-              {authMode === 'login' ? 'Se connecter' : 'Créer mon compte'}
+
+            <button type="submit" disabled={!supabase} className={`w-full py-5 rounded-[2rem] font-black uppercase shadow-xl transition-all flex items-center justify-center gap-3 ${supabase ? 'dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
+              {authMode === 'login' ? <LogIn size={20}/> : <UserPlus size={20}/>}
+              {authMode === 'login' ? 'Ouvrir le tableau' : 'Créer ma Familyteam'}
             </button>
           </form>
 
-          <div className="text-center">
-            <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-[10px] font-black uppercase text-indigo-600 hover:underline">
-              {authMode === 'login' ? "Pas encore de compte ? S'inscrire" : "Déjà un compte ? Se connecter"}
+          <div className="text-center pt-2">
+            <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(""); }} className="text-[11px] font-black uppercase text-indigo-600 hover:text-indigo-800 transition-colors border-b-2 border-indigo-100">
+              {authMode === 'login' ? "Nouveau ici ? Créer un compte famille" : "Déjà membre ? Se connecter"}
             </button>
           </div>
+        </div>
+
+        <div className="mt-8 flex flex-col items-center gap-2">
+           <a href="#" className="text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 tracking-widest transition-colors flex items-center gap-1.5">
+             <Shield size={10}/> Conditions Générales de Vente (CGV)
+           </a>
+           <p className="text-[8px] font-bold text-slate-300 uppercase">© 2024 Family Board Pro</p>
         </div>
       </div>
     );
@@ -295,7 +374,7 @@ const App: React.FC = () => {
         </div>
         <div className="flex items-center gap-3">
           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${isCloudActive ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
-            {isCloudActive ? <><Cloud size={14}/> Cloud Sync</> : <><CloudOff size={14}/> Local Mode</>}
+            {isCloudActive ? <><Cloud size={14}/> Cloud Sync</> : <><CloudOff size={14}/> Offline Mode</>}
           </div>
           <button onClick={handleLogout} className="p-3 bg-slate-100 rounded-2xl text-slate-400 hover:text-rose-500 transition-colors">
             <LogOut size={20}/>
@@ -315,7 +394,7 @@ const App: React.FC = () => {
             
             <div className="grid grid-cols-1 gap-8">
               {children.length === 0 ? (
-                <div className="bg-white p-12 rounded-[3rem] border-4 border-dashed border-slate-100 flex flex-col items-center justify-center text-center space-y-4">
+                <div className="bg-white p-12 rounded-[3.5rem] border-4 border-dashed border-slate-100 flex flex-col items-center justify-center text-center space-y-4">
                   <div className="p-6 bg-slate-50 text-slate-300 rounded-full"><Users size={48}/></div>
                   <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Aucun enfant n'a encore été ajouté.</p>
                   <button onClick={() => setIsNewChildOpen(true)} className="dynamic-primary-text font-black uppercase text-[10px] tracking-widest border-b-2 dynamic-primary-border">Commencer maintenant</button>
@@ -330,7 +409,7 @@ const App: React.FC = () => {
                     onAddPoints={handlePointAction} 
                     onToggleGage={() => {}} 
                     onRemoveChild={() => {}} 
-                    onSelect={setSelectedChild} 
+                    onSelect={() => {}} 
                     onOpenGoals={() => {}} 
                     onOpenAvatarPicker={() => {}}
                     onToggleTimer={() => {}}
@@ -338,23 +417,6 @@ const App: React.FC = () => {
                   />
                 ))
               )}
-            </div>
-          </div>
-        )}
-
-        {/* Autres vues (Agenda, Notes, etc.) resteraient ici... */}
-        {activeView === 'notes' && (
-          <div className="space-y-8 pb-20">
-            <div className="flex justify-between items-center">
-              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Le Mur</h2>
-              <button onClick={() => setIsAddNoteOpen(true)} className="bg-amber-400 text-white p-4 rounded-3xl shadow-lg active:scale-95 transition-all"><Plus/></button>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              {notes.filter(n => !n.isArchived).map(note => (
-                <div key={note.id} className="aspect-square p-6 rounded-[2.5rem] shadow-sm relative group animate-in zoom-in" style={{ backgroundColor: note.color }}>
-                  <p className="text-xs font-black text-slate-800 leading-snug">{note.text}</p>
-                </div>
-              ))}
             </div>
           </div>
         )}
@@ -380,27 +442,12 @@ const App: React.FC = () => {
       {/* MODAL AJOUT ENFANT */}
       {isNewChildOpen && (
         <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-md flex items-center justify-center p-6 overflow-y-auto">
-          <div className="w-full max-w-2xl bg-white rounded-[3rem] p-8 sm:p-10 space-y-10 my-8 shadow-2xl relative">
+          <div className="w-full max-w-2xl bg-white rounded-[3.5rem] p-8 sm:p-10 space-y-10 my-8 shadow-2xl relative">
             <button onClick={() => setIsNewChildOpen(false)} className="absolute top-8 right-8 p-3 bg-slate-100 rounded-full"><X size={24}/></button>
             <div className="text-center space-y-2"><h2 className="text-3xl font-black uppercase tracking-tighter text-slate-800">Nouveau Profil</h2></div>
-            {/* Fix: use handleAddChildForm instead of handleAddChildChildForm */}
             <form onSubmit={handleAddChildForm} className="space-y-8">
-              <input required type="text" value={newChildData.name} onChange={e => setNewChildData({...newChildData, name: e.target.value})} className="w-full p-6 bg-slate-50 rounded-[2rem] font-black text-2xl outline-none" placeholder="Prénom de l'enfant" />
+              <input required type="text" value={newChildData.name} onChange={e => setNewChildData({...newChildData, name: e.target.value})} className="w-full p-6 bg-slate-50 rounded-[2rem] font-black text-2xl outline-none border-2 border-transparent focus:border-indigo-100 transition-all" placeholder="Prénom de l'enfant" />
               <button type="submit" className="w-full dynamic-primary-bg text-white py-6 rounded-[2.5rem] font-black uppercase shadow-xl text-lg">Valider ✨</button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL NOTE */}
-      {isAddNoteOpen && (
-        <div className="fixed inset-0 z-[150] bg-black/40 backdrop-blur-md flex items-center justify-center p-6">
-          <div className="w-full max-w-md bg-white rounded-[3rem] p-8 space-y-8 shadow-2xl">
-            <div className="flex justify-between items-center"><h2 className="text-2xl font-black uppercase tracking-tighter text-slate-800">Note Express</h2><button onClick={() => setIsAddNoteOpen(false)} className="p-2 bg-slate-100 rounded-full"><X/></button></div>
-            <form onSubmit={handleAddNoteSubmit} className="space-y-6">
-              <textarea required value={newNoteData.text} onChange={e => setNewNoteData({...newNoteData, text: e.target.value})} className="w-full p-6 bg-slate-50 rounded-[2rem] font-bold min-h-[120px] outline-none" placeholder="Message important..." />
-              <div className="flex flex-wrap gap-3">{NOTE_COLORS.map(c => <button key={c} type="button" onClick={() => setNewNoteData({...newNoteData, color: c})} className={`w-10 h-10 rounded-full border-4 ${newNoteData.color === c ? 'border-indigo-500' : 'border-transparent'}`} style={{ backgroundColor: c }} />)}</div>
-              <button type="submit" className="w-full dynamic-primary-bg text-white py-5 rounded-[2rem] font-black uppercase shadow-lg">Épingler</button>
             </form>
           </div>
         </div>
