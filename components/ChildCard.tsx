@@ -32,18 +32,11 @@ export const ChildCard: React.FC<ChildCardProps> = ({
   
   const minutes = Math.floor(child.screenTimeRemaining / 60);
   const seconds = child.screenTimeRemaining % 60;
-  const timeProgress = (child.screenTimeRemaining / (child.screenTimeLimit * 60)) * 100;
-
-  const cardStyle: React.CSSProperties = child.cardBackground 
-    ? { 
-        backgroundImage: `linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.95)), url(${child.cardBackground})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center'
-      } 
-    : { backgroundColor: 'white' };
+  const limitInSeconds = (child.screenTimeLimit || 60) * 60;
+  const timeProgress = (child.screenTimeRemaining / limitInSeconds) * 100;
 
   return (
-    <div className="rounded-[3rem] p-8 shadow-xl shadow-slate-200/50 border border-slate-100 group transition-all" style={cardStyle}>
+    <div className={`rounded-[3rem] p-8 shadow-xl shadow-slate-200/50 border group transition-all bg-white ${child.isTimerRunning ? 'ring-4 ring-indigo-100' : 'border-slate-100'}`}>
       
       {/* Header Info */}
       <div className="flex items-center justify-between mb-8">
@@ -60,14 +53,25 @@ export const ChildCard: React.FC<ChildCardProps> = ({
             </div>
           </div>
         </div>
-        <button onClick={() => onSelect(child)} className="p-4 bg-white/60 backdrop-blur-md rounded-3xl text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-all shadow-sm"><ChevronRight size={24}/></button>
+        <div className="flex flex-col gap-2 items-end">
+           {child.activeGages?.map(gid => {
+             const g = gages.find(x => x.id === gid);
+             return g ? (
+               <div key={gid} className="px-3 py-1 bg-rose-50 text-rose-500 rounded-full text-[8px] font-black uppercase flex items-center gap-1 border border-rose-100 animate-in fade-in slide-in-from-right-2">
+                 <AlertCircle size={10}/> {g.label}
+               </div>
+             ) : null;
+           })}
+        </div>
       </div>
 
-      {/* Screen Time Modern Component */}
-      <div className="bg-white/40 backdrop-blur-sm p-6 rounded-[2.5rem] mb-8 border border-white space-y-4">
+      {/* Screen Time Component */}
+      <div className={`bg-slate-50 p-6 rounded-[2.5rem] mb-8 border border-white space-y-4 transition-colors ${child.isTimerRunning ? 'bg-indigo-50/50' : ''}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-             <div className="p-2 bg-white rounded-xl shadow-sm"><Monitor size={18} className="text-indigo-600"/></div>
+             <div className={`p-2 rounded-xl shadow-sm ${child.isTimerRunning ? 'bg-indigo-500 text-white animate-pulse' : 'bg-white text-slate-400'}`}>
+                <Monitor size={18} />
+             </div>
              <span className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Temps d'écran</span>
           </div>
           <div className={`font-mono font-black text-lg ${child.screenTimeRemaining === 0 ? 'text-rose-500 animate-pulse' : 'text-slate-700'}`}>
@@ -76,13 +80,13 @@ export const ChildCard: React.FC<ChildCardProps> = ({
         </div>
         
         <div className="relative w-full h-3 bg-slate-200 rounded-full overflow-hidden shadow-inner">
-           <div className={`h-full transition-all duration-1000 rounded-full ${timeProgress < 15 ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${timeProgress}%` }} />
+           <div className={`h-full transition-all duration-1000 rounded-full ${timeProgress < 15 ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(100, timeProgress)}%` }} />
         </div>
 
         <div className="flex gap-3">
           <button onClick={() => onToggleTimer(child.id)} className={`flex-1 py-4 rounded-2xl text-[10px] font-black uppercase flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95 ${child.isTimerRunning ? 'bg-amber-400 text-white shadow-amber-100' : 'bg-emerald-500 text-white shadow-emerald-100'}`}>
             {child.isTimerRunning ? <Pause size={16} fill="currentColor"/> : <Play size={16} fill="currentColor"/>}
-            {child.isTimerRunning ? 'Pause' : 'Start'}
+            {child.isTimerRunning ? 'Pause' : 'Commencer'}
           </button>
           <button onClick={() => onResetTimer(child.id)} className="p-4 bg-white text-slate-400 rounded-2xl border border-slate-100 shadow-sm active:rotate-180 transition-all"><RefreshCcw size={18}/></button>
         </div>
@@ -100,13 +104,16 @@ export const ChildCard: React.FC<ChildCardProps> = ({
         </div>
 
         {showQuickGages && (
-          <div className="p-4 bg-white/40 backdrop-blur-md rounded-[2rem] grid grid-cols-1 gap-2 animate-in slide-in-from-top-4 duration-300">
-             {gages.map(g => (
-               <button key={g.id} onClick={() => { onToggleGage(child.id, g.id); setShowQuickGages(false); }} className="w-full text-left p-4 bg-white rounded-2xl border border-slate-100 text-[10px] font-black uppercase text-slate-500 flex justify-between items-center group">
-                 {g.label}
-                 <span className="text-rose-400 opacity-0 group-hover:opacity-100 transition-all">{g.points} pts</span>
-               </button>
-             ))}
+          <div className="p-4 bg-slate-50 rounded-[2rem] grid grid-cols-1 gap-2 animate-in slide-in-from-top-4 duration-300">
+             {gages.map(g => {
+               const isActive = child.activeGages?.includes(g.id);
+               return (
+                 <button key={g.id} onClick={() => { onToggleGage(child.id, g.id); }} className={`w-full text-left p-4 rounded-2xl border transition-all text-[10px] font-black uppercase flex justify-between items-center group ${isActive ? 'bg-rose-500 border-rose-600 text-white' : 'bg-white border-slate-100 text-slate-500'}`}>
+                   {g.label}
+                   <span className={isActive ? 'text-white' : 'text-rose-400'}>{g.points} pts</span>
+                 </button>
+               );
+             })}
           </div>
         )}
 
@@ -114,7 +121,7 @@ export const ChildCard: React.FC<ChildCardProps> = ({
            {services.slice(0, 3).map(s => {
              const Icon = IconMap[s.iconName] || Zap;
              return (
-               <button key={s.id} onClick={() => onAddPoints(child.id, s.points, s.name)} className="flex flex-col items-center justify-center p-5 bg-white/80 backdrop-blur-md border border-slate-100 rounded-[2rem] shadow-sm hover:shadow-lg hover:border-indigo-100 transition-all">
+               <button key={s.id} onClick={() => onAddPoints(child.id, s.points, s.name)} className="flex flex-col items-center justify-center p-5 bg-white border border-slate-100 rounded-[2rem] shadow-sm hover:shadow-lg hover:border-indigo-100 transition-all">
                  <Icon size={20} className="dynamic-primary-text mb-2" />
                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest text-center">{s.name}</span>
                  <span className="text-[10px] font-black dynamic-primary-text mt-1">+{s.points}</span>

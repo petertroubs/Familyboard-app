@@ -56,8 +56,6 @@ const App: React.FC = () => {
   const [authError, setAuthError] = useState("");
   const [familyId, setFamilyId] = useState<string | null>(null);
 
-  const todayStr = new Date().toISOString().split('T')[0];
-
   // --- APP STATE ---
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [children, setChildren] = useState<Child[]>([]);
@@ -70,8 +68,25 @@ const App: React.FC = () => {
   const [newChildData, setNewChildData] = useState({ 
     name: '', age: 6, passion: '', favoriteAnimal: '', dreamJob: '', avatar: PREDEFINED_AVATARS[0], cardBackground: ''
   });
-  const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
-  const [newNoteData, setNewNoteData] = useState({ text: '', color: NOTE_COLORS[0] });
+
+  // --- TIMER LOGIC ---
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setChildren(prev => prev.map(child => {
+        if (child.isTimerRunning && child.screenTimeRemaining > 0) {
+          const newTime = child.screenTimeRemaining - 1;
+          // Stop timer if it reaches 0
+          return { 
+            ...child, 
+            screenTimeRemaining: newTime, 
+            isTimerRunning: newTime > 0 
+          };
+        }
+        return child;
+      }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // --- INITIALISATION ---
   useEffect(() => {
@@ -107,12 +122,17 @@ const App: React.FC = () => {
       if (data) {
         setUser({ email, familyName: data.family.family_name, isAuthenticated: true });
         setFamilyId(data.family.id);
-        setChildren(data.children as any);
+        setChildren(data.children.map((c: any) => ({
+          ...c,
+          activeGages: c.active_gages || [],
+          screenTimeLimit: c.screen_time_limit || 60,
+          screenTimeRemaining: c.screen_time_remaining || 3600,
+          isTimerRunning: false,
+        })));
         setAgenda(data.agenda as any);
         setNotes(data.notes as any);
         setIsCloudActive(true);
       } else {
-        // Utilisateur sans famille créée (bug ou inscription interrompue)
         setUser({ email, familyName: "Configuration requise", isAuthenticated: true });
         setIsCloudActive(false);
       }
@@ -124,37 +144,79 @@ const App: React.FC = () => {
     }
   };
 
-  // --- ACTIONS AUTH ---
+  // --- ACTIONS HANDLERS ---
+  const handleToggleTimer = (childId: string) => {
+    setChildren(prev => prev.map(c => 
+      c.id === childId ? { ...c, isTimerRunning: !c.isTimerRunning } : c
+    ));
+  };
+
+  const handleResetTimer = (childId: string) => {
+    setChildren(prev => prev.map(c => 
+      c.id === childId ? { ...c, screenTimeRemaining: c.screenTimeLimit * 60, isTimerRunning: false } : c
+    ));
+  };
+
+  const handleToggleGage = async (childId: string, gageId: string) => {
+    const gage = config.gages.find(g => g.id === gageId);
+    if (!gage) return;
+
+    setChildren(prev => prev.map(c => {
+      if (c.id === childId) {
+        const alreadyHas = (c.activeGages || []).includes(gageId);
+        const newGages = alreadyHas 
+          ? c.activeGages?.filter(id => id !== gageId) 
+          : [...(c.activeGages || []), gageId];
+        
+        // Appliquer la pénalité de points si on ajoute le gage
+        const newScore = !alreadyHas && gage.points ? Math.max(0, c.score + gage.points) : c.score;
+        
+        if (supabase) {
+          supabase.from('children').update({ 
+            active_gages: newGages,
+            score: newScore 
+          }).eq('id', childId).then();
+        }
+        
+        return { ...c, activeGages: newGages, score: newScore };
+      }
+      return c;
+    }));
+  };
+
+  const handlePointAction = async (childId: string, points: number, reason: string) => {
+    const child = children.find(c => c.id === childId);
+    if (!child) return;
+    const newScore = Math.max(0, child.score + points);
+    setChildren(prev => prev.map(c => c.id === childId ? { ...c, score: newScore } : c));
+    
+    if (supabase) {
+      try {
+        await supabase.from('children').update({ score: newScore }).eq('id', childId);
+        await supabase.from('point_history').insert([{ 
+          child_id: childId, 
+          type: points >= 0 ? 'positive' : 'negative', 
+          reason, 
+          points 
+        }]);
+      } catch (err) {
+        console.error("Failed to sync points:", err);
+      }
+    }
+  };
+
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError("");
-    if (!supabase) {
-      setAuthError("Configuration Supabase manquante. Vérifiez vos variables d'environnement.");
-      return;
-    }
-
-    if (authMode === 'register') {
-      if (authPassword !== authConfirmPassword) {
-        setAuthError("Les mots de passe ne correspondent pas.");
-        return;
-      }
-      if (authPassword.length < 6) {
-        setAuthError("Le mot de passe doit faire au moins 6 caractères.");
-        return;
-      }
-    }
-
+    if (!supabase) return;
     setIsLoading(true);
     try {
       if (authMode === 'register') {
         const { error: signUpError } = await supabase.auth.signUp({ 
           email: authEmail, 
           password: authPassword,
-          options: { data: { family_name: authFamilyName } }
         });
         if (signUpError) throw signUpError;
-        
-        // Créer l'entrée famille immédiatement
         await createFamily(authEmail, authFamilyName || "Ma Famille");
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({ 
@@ -165,20 +227,6 @@ const App: React.FC = () => {
       }
     } catch (err: any) {
       setAuthError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Bouton de secours si la famille n'a pas été créée
-  const handleManualFamilyCreation = async () => {
-    if (!user?.email || !authFamilyName) return;
-    setIsLoading(true);
-    try {
-      await createFamily(user.email, authFamilyName);
-      await handlePostLogin(user.email);
-    } catch (err: any) {
-      setAuthError(`Échec de l'initialisation: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -197,7 +245,7 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!newChildData.name.trim() || !familyId) return;
 
-    const newChild = {
+    const newChild: Partial<Child> = {
       ...newChildData,
       score: 0,
       dailyChallenges: [],
@@ -205,6 +253,7 @@ const App: React.FC = () => {
       screenTimeLimit: 60,
       screenTimeRemaining: 3600,
       isTimerRunning: false,
+      activeGages: [],
     };
 
     const tempId = crypto.randomUUID();
@@ -212,27 +261,15 @@ const App: React.FC = () => {
     setIsNewChildOpen(false);
 
     if (supabase) {
-      const { data, error } = await supabase.from('children').insert([{ ...newChild, family_id: familyId }]).select().single();
+      const { data, error } = await supabase.from('children').insert([{ 
+        ...newChild, 
+        family_id: familyId,
+        active_gages: [],
+        screen_time_limit: 60,
+        screen_time_remaining: 3600
+      }]).select().single();
       if (!error) {
-        setChildren(prev => prev.map(c => c.id === tempId ? data : c));
-      } else {
-        setAuthError(`Erreur Cloud: ${error.message}`);
-      }
-    }
-  };
-
-  const handlePointAction = async (childId: string, points: number, reason: string) => {
-    const child = children.find(c => c.id === childId);
-    if (!child) return;
-    const newScore = Math.max(0, child.score + points);
-    setChildren(prev => prev.map(c => c.id === childId ? { ...c, score: newScore } : c));
-    
-    if (supabase) {
-      try {
-        await supabase.from('children').update({ score: newScore }).eq('id', childId);
-        await supabase.from('point_history').insert([{ child_id: childId, type: points >= 0 ? 'positive' : 'negative', reason, points }]);
-      } catch (err) {
-        console.error("Failed to sync points:", err);
+        setChildren(prev => prev.map(c => c.id === tempId ? { ...c, id: data.id } : c));
       }
     }
   };
@@ -242,28 +279,7 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50">
         <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mb-4" />
-        <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Connexion sécurisée...</p>
-      </div>
-    );
-  }
-
-  // Écran de configuration de secours (si auth OK mais pas de famille)
-  if (user && !familyId) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-        <div className="w-full max-w-md bg-white rounded-[3rem] p-10 shadow-2xl space-y-8">
-           <div className="text-center space-y-4">
-             <div className="inline-block p-4 bg-amber-50 text-amber-500 rounded-full animate-bounce"><AlertCircle size={32}/></div>
-             <h2 className="text-2xl font-black uppercase text-slate-800">Presque prêt !</h2>
-             <p className="text-xs font-bold text-slate-400 uppercase">Nous devons initialiser votre espace famille.</p>
-           </div>
-           <div className="space-y-4">
-             <input type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} placeholder="Nom de votre famille" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-indigo-100" />
-             <button onClick={handleManualFamilyCreation} className="w-full dynamic-primary-bg text-white py-5 rounded-2xl font-black uppercase shadow-lg">Créer l'espace</button>
-             <button onClick={handleLogout} className="w-full text-xs font-black uppercase text-slate-400 py-2">Déconnexion</button>
-           </div>
-           {authError && <p className="text-[10px] text-rose-500 font-bold uppercase text-center">{authError}</p>}
-        </div>
+        <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Initialisation...</p>
       </div>
     );
   }
@@ -271,99 +287,41 @@ const App: React.FC = () => {
   if (!user) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
-        {/* Diagnostic connection */}
-        {!supabase && (
-          <div className="fixed top-6 left-6 right-6 z-[100] p-4 bg-rose-500 text-white rounded-2xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-top-4">
-            <WifiOff size={24}/>
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest">Alerte Développeur</p>
-              <p className="text-xs font-bold">Supabase n'est pas configuré. Vérifiez vos clés d'API.</p>
-            </div>
-          </div>
-        )}
-
-        <div className="w-full max-w-md bg-white rounded-[3.5rem] p-10 shadow-2xl space-y-8 animate-in fade-in zoom-in duration-700 border border-slate-100 relative">
+        <div className="w-full max-w-md bg-white rounded-[3.5rem] p-10 shadow-2xl space-y-8 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-2 dynamic-primary-bg opacity-20"></div>
           <div className="text-center space-y-4">
             <div className="inline-block p-5 bg-indigo-50 text-indigo-600 rounded-[2.5rem] mb-2 shadow-inner">
               <Sparkles size={40} className="animate-pulse" />
             </div>
-            <div className="space-y-1">
-              <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Bienvenue</h2>
-              <p className="text-sm font-bold text-indigo-500/80 uppercase tracking-widest">Votre Familyteam vous attend</p>
-            </div>
+            <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Family Board</h2>
           </div>
 
           <form onSubmit={handleAuth} className="space-y-5">
-            {authError && (
-              <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl flex items-center gap-3 animate-in slide-in-from-top-2 overflow-hidden">
-                <AlertCircle size={18} className="text-rose-500 flex-shrink-0" />
-                <p className="text-[11px] font-black uppercase text-rose-600 tracking-tight leading-tight break-words">{authError}</p>
-              </div>
-            )}
-            
+            {authError && <p className="text-[11px] font-black uppercase text-rose-600 text-center">{authError}</p>}
             <div className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 px-3">Email</label>
-                <div className="relative">
-                  <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                  <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="votre@email.com" />
-                </div>
-              </div>
-
+              <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Email" />
               {authMode === 'register' && (
-                <div className="space-y-1 animate-in fade-in slide-in-from-left-2">
-                  <label className="text-[10px] font-black uppercase text-slate-400 px-3">Nom de famille</label>
-                  <div className="relative">
-                    <Users className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                    <input required type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="Ex: Les Martin" />
-                  </div>
-                </div>
+                <input required type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Nom de famille" />
               )}
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 px-3">Mot de passe</label>
-                <div className="relative">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                  <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="••••••••" />
-                </div>
-              </div>
-
-              {authMode === 'register' && (
-                <div className="space-y-1 animate-in fade-in slide-in-from-right-2">
-                  <label className="text-[10px] font-black uppercase text-slate-400 px-3">Confirmer mot de passe</label>
-                  <div className="relative">
-                    <ShieldCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                    <input required type="password" value={authConfirmPassword} onChange={e => setAuthConfirmPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="••••••••" />
-                  </div>
-                </div>
-              )}
+              <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Mot de passe" />
             </div>
-
-            <button type="submit" disabled={!supabase} className={`w-full py-5 rounded-[2rem] font-black uppercase shadow-xl transition-all flex items-center justify-center gap-3 ${supabase ? 'dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
-              {authMode === 'login' ? <LogIn size={20}/> : <UserPlus size={20}/>}
-              {authMode === 'login' ? 'Ouvrir le tableau' : 'Créer ma Familyteam'}
+            <button type="submit" className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all">
+              {authMode === 'login' ? 'Se connecter' : 'Créer un compte'}
             </button>
           </form>
 
-          <div className="text-center pt-2">
-            <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(""); }} className="text-[11px] font-black uppercase text-indigo-600 hover:text-indigo-800 transition-colors border-b-2 border-indigo-100">
-              {authMode === 'login' ? "Nouveau ici ? Créer un compte famille" : "Déjà membre ? Se connecter"}
+          <div className="text-center">
+            <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100">
+              {authMode === 'login' ? "Nouveau ici ? S'inscrire" : "Déjà membre ? Connexion"}
             </button>
           </div>
-        </div>
-
-        <div className="mt-8 flex flex-col items-center gap-2">
-           <a href="#" className="text-[9px] font-black uppercase text-slate-400 hover:text-slate-600 tracking-widest transition-colors flex items-center gap-1.5">
-             <Shield size={10}/> Conditions Générales de Vente (CGV)
-           </a>
-           <p className="text-[8px] font-bold text-slate-300 uppercase">© 2024 Family Board Pro</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen pb-24 transition-all duration-700" style={{ backgroundColor: config.theme.backgroundColor }}>
+    <div className="min-h-screen pb-24" style={{ backgroundColor: config.theme.backgroundColor }}>
       <header className="glass-panel sticky top-0 z-40 px-6 py-5 flex items-center justify-between border-b border-slate-200/50">
         <div className="flex items-center gap-4">
           <div className="dynamic-primary-bg p-3 rounded-2xl shadow-lg text-white"><Sparkles size={24} /></div>
@@ -373,8 +331,8 @@ const App: React.FC = () => {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${isCloudActive ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
-            {isCloudActive ? <><Cloud size={14}/> Cloud Sync</> : <><CloudOff size={14}/> Offline Mode</>}
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest ${isCloudActive ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+            {isCloudActive ? <Cloud size={14}/> : <CloudOff size={14}/>} {isCloudActive ? 'Cloud' : 'Offline'}
           </div>
           <button onClick={handleLogout} className="p-3 bg-slate-100 rounded-2xl text-slate-400 hover:text-rose-500 transition-colors">
             <LogOut size={20}/>
@@ -388,7 +346,7 @@ const App: React.FC = () => {
             <div className="flex justify-between items-center">
               <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Le Tableau</h2>
               <button onClick={() => setIsNewChildOpen(true)} className="dynamic-primary-bg text-white px-6 py-4 rounded-[2rem] shadow-xl flex items-center gap-2 font-black uppercase text-sm active:scale-95 transition-all">
-                <Plus size={20} /> Profil
+                <Plus size={20} /> Enfant
               </button>
             </div>
             
@@ -396,8 +354,7 @@ const App: React.FC = () => {
               {children.length === 0 ? (
                 <div className="bg-white p-12 rounded-[3.5rem] border-4 border-dashed border-slate-100 flex flex-col items-center justify-center text-center space-y-4">
                   <div className="p-6 bg-slate-50 text-slate-300 rounded-full"><Users size={48}/></div>
-                  <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Aucun enfant n'a encore été ajouté.</p>
-                  <button onClick={() => setIsNewChildOpen(true)} className="dynamic-primary-text font-black uppercase text-[10px] tracking-widest border-b-2 dynamic-primary-border">Commencer maintenant</button>
+                  <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Aucun enfant ajouté.</p>
                 </div>
               ) : (
                 children.map(child => (
@@ -407,17 +364,99 @@ const App: React.FC = () => {
                     services={config.services} 
                     gages={config.gages}
                     onAddPoints={handlePointAction} 
-                    onToggleGage={() => {}} 
+                    onToggleGage={handleToggleGage} 
                     onRemoveChild={() => {}} 
                     onSelect={() => {}} 
                     onOpenGoals={() => {}} 
                     onOpenAvatarPicker={() => {}}
-                    onToggleTimer={() => {}}
-                    onResetTimer={() => {}}
+                    onToggleTimer={handleToggleTimer}
+                    onResetTimer={handleResetTimer}
                   />
                 ))
               )}
             </div>
+          </div>
+        )}
+
+        {activeView === 'agenda' && (
+           <div className="space-y-6">
+             <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">L'Agenda</h2>
+             <div className="bg-white rounded-[3rem] p-8 shadow-xl border border-slate-100 min-h-[400px] flex flex-col items-center justify-center gap-4">
+                <CalendarIcon size={48} className="text-slate-200" />
+                <p className="text-xs font-black uppercase text-slate-400">Aucun événement cette semaine</p>
+                <button className="dynamic-primary-bg text-white px-6 py-3 rounded-2xl font-black uppercase text-[10px] tracking-widest">+ Ajouter</button>
+             </div>
+           </div>
+        )}
+
+        {activeView === 'notes' && (
+           <div className="space-y-6">
+             <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Notes & Rappels</h2>
+             <div className="grid grid-cols-2 gap-4">
+                {notes.length === 0 ? (
+                  <div className="col-span-2 bg-amber-50 rounded-[2.5rem] p-12 flex flex-col items-center justify-center gap-4 border-2 border-dashed border-amber-200">
+                    <NoteIcon size={40} className="text-amber-300" />
+                    <p className="text-[10px] font-black uppercase text-amber-500">Zéro Post-it !</p>
+                  </div>
+                ) : (
+                  notes.map(note => (
+                    <div key={note.id} className="p-6 rounded-3xl shadow-sm rotate-1 flex flex-col justify-between min-h-[150px]" style={{ backgroundColor: note.color }}>
+                      <p className="font-bold text-slate-800">{note.text}</p>
+                      <span className="text-[8px] font-black uppercase text-slate-400">{new Date(note.date).toLocaleDateString()}</span>
+                    </div>
+                  ))
+                )}
+             </div>
+           </div>
+        )}
+
+        {activeView === 'parents' && (
+          <div className="space-y-6">
+             <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Le Coaching</h2>
+             <div className="grid grid-cols-1 gap-4">
+                {[
+                  { title: "Gérer les écrans", icon: Monitor, color: "bg-blue-50 text-blue-600" },
+                  { title: "Motivation & Points", icon: Star, color: "bg-amber-50 text-amber-600" },
+                  { title: "Routine du soir", icon: Zap, color: "bg-purple-50 text-purple-600" }
+                ].map((item, idx) => (
+                  <div key={idx} className="bg-white p-6 rounded-[2.5rem] border border-slate-100 flex items-center gap-6 shadow-sm">
+                    <div className={`p-4 rounded-2xl ${item.color}`}><item.icon size={24}/></div>
+                    <div className="flex-1">
+                       <h3 className="font-black uppercase text-sm text-slate-800">{item.title}</h3>
+                       <p className="text-[10px] font-bold text-slate-400">Lire les conseils d'expert</p>
+                    </div>
+                    <ChevronRight className="text-slate-300" size={20} />
+                  </div>
+                ))}
+             </div>
+          </div>
+        )}
+
+        {activeView === 'admin' && (
+          <div className="space-y-6">
+             <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Réglages</h2>
+             <div className="bg-white rounded-[3rem] p-8 space-y-8 shadow-xl">
+                <div className="space-y-4">
+                   <h3 className="text-xs font-black uppercase text-slate-400 tracking-widest">Compte</h3>
+                   <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
+                      <div className="p-3 bg-white rounded-xl shadow-sm"><Mail size={18} className="text-slate-400"/></div>
+                      <div className="flex-1">
+                        <p className="text-[10px] font-black text-slate-800 uppercase">{user.email}</p>
+                        <p className="text-[8px] font-bold text-slate-400 uppercase">Administrateur</p>
+                      </div>
+                   </div>
+                </div>
+                <div className="space-y-4">
+                   <h3 className="text-xs font-black uppercase text-slate-400 tracking-widest">Interface</h3>
+                   <button className="w-full flex justify-between items-center p-4 hover:bg-slate-50 rounded-2xl transition-colors">
+                      <div className="flex items-center gap-4">
+                         <Palette size={18} className="text-indigo-500" />
+                         <span className="text-[10px] font-black uppercase text-slate-700">Couleur du thème</span>
+                      </div>
+                      <div className="w-6 h-6 rounded-full dynamic-primary-bg"></div>
+                   </button>
+                </div>
+             </div>
           </div>
         )}
       </main>
@@ -441,13 +480,13 @@ const App: React.FC = () => {
 
       {/* MODAL AJOUT ENFANT */}
       {isNewChildOpen && (
-        <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-md flex items-center justify-center p-6 overflow-y-auto">
-          <div className="w-full max-w-2xl bg-white rounded-[3.5rem] p-8 sm:p-10 space-y-10 my-8 shadow-2xl relative">
+        <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-md flex items-center justify-center p-6">
+          <div className="w-full max-w-md bg-white rounded-[3.5rem] p-10 space-y-8 relative shadow-2xl">
             <button onClick={() => setIsNewChildOpen(false)} className="absolute top-8 right-8 p-3 bg-slate-100 rounded-full"><X size={24}/></button>
-            <div className="text-center space-y-2"><h2 className="text-3xl font-black uppercase tracking-tighter text-slate-800">Nouveau Profil</h2></div>
-            <form onSubmit={handleAddChildForm} className="space-y-8">
-              <input required type="text" value={newChildData.name} onChange={e => setNewChildData({...newChildData, name: e.target.value})} className="w-full p-6 bg-slate-50 rounded-[2rem] font-black text-2xl outline-none border-2 border-transparent focus:border-indigo-100 transition-all" placeholder="Prénom de l'enfant" />
-              <button type="submit" className="w-full dynamic-primary-bg text-white py-6 rounded-[2.5rem] font-black uppercase shadow-xl text-lg">Valider ✨</button>
+            <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-800 text-center">Nouveau Profil</h2>
+            <form onSubmit={handleAddChildForm} className="space-y-6">
+              <input required type="text" value={newChildData.name} onChange={e => setNewChildData({...newChildData, name: e.target.value})} className="w-full p-4 bg-slate-50 rounded-2xl font-black outline-none border-2 border-transparent focus:border-indigo-100" placeholder="Prénom" />
+              <button type="submit" className="w-full dynamic-primary-bg text-white py-5 rounded-[2rem] font-black uppercase shadow-xl">Valider ✨</button>
             </form>
           </div>
         </div>
