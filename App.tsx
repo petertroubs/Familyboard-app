@@ -1,30 +1,23 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
-  Plus, Sparkles, X, Trophy, Settings, Check, 
-  Zap, Utensils, Home, Trash2, Users, Star, Medal,
+  Plus, Sparkles, X, Trophy, Settings, 
+  Zap, Utensils, Home, Users, Star, 
   Tv, BookOpen, Calendar as CalendarIcon, 
-  Copy, History, Target, Award, Gift, Monitor, 
-  ChevronRight, Heart, Mic, Newspaper, ExternalLink, 
-  Lightbulb, LogIn, Lock, LayoutDashboard, Camera, 
-  ListChecks, ImageIcon, ShieldCheck, Share2, 
-  Palette, Info, HelpCircle, AlertCircle, StickyNote as NoteIcon,
-  Calendar, Clock, Mail, LogOut, UserPlus, Bell, CheckCircle2,
-  ChevronLeft, Archive, Bookmark, RefreshCcw, Volume2, Pin, PinOff, Tag, Upload, 
-  Dumbbell, TargetIcon, Smile, TrendingUp, TrendingDown, Eye, EyeOff, ThumbsUp, ThumbsDown, Cloud, CloudOff, Loader2,
-  Shield, WifiOff
+  Monitor, ChevronRight, Heart, LayoutDashboard, 
+  Palette, AlertCircle, StickyNote as NoteIcon,
+  Calendar, Mail, LogOut, Cloud, CloudOff, Loader2
 } from 'lucide-react';
 import { Child, AppConfig, AgendaEntry, StickyNote, UserAccount } from './types';
 import { ChildCard } from './components/ChildCard';
 import { supabase, fetchFamilyData, createFamily } from './services/supabaseClient';
+import { AuthChangeEvent, Session } from '@supabase/supabase-js';
 
 const PREDEFINED_AVATARS = [
   'https://picsum.photos/id/64/200', 'https://picsum.photos/id/65/200', 'https://picsum.photos/id/66/200',
   'https://picsum.photos/id/67/200', 'https://picsum.photos/id/69/200', 'https://picsum.photos/id/91/200',
   'https://picsum.photos/id/103/200', 'https://picsum.photos/id/177/200', 'https://picsum.photos/id/202/200',
 ];
-
-const NOTE_COLORS = ['#fef3c7', '#dcfce7', '#dbeafe', '#fce7f3', '#f3e8ff', '#e0f2fe', '#ffedd5'];
 
 const DEFAULT_CONFIG: AppConfig = {
   appName: "Family Board Pro",
@@ -43,44 +36,34 @@ const DEFAULT_CONFIG: AppConfig = {
 };
 
 const App: React.FC = () => {
-  // --- AUTH & CLOUD STATE ---
   const [user, setUser] = useState<UserAccount | null>(null);
-  const [session, setSession] = useState<any>(null);
+  const [, setSession] = useState<Session | null>(null);
   const [isCloudActive, setIsCloudActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [authConfirmPassword, setAuthConfirmPassword] = useState("");
   const [authFamilyName, setAuthFamilyName] = useState("");
   const [authError, setAuthError] = useState("");
   const [familyId, setFamilyId] = useState<string | null>(null);
 
-  // --- APP STATE ---
-  const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
+  const [config] = useState<AppConfig>(DEFAULT_CONFIG);
   const [children, setChildren] = useState<Child[]>([]);
-  const [agenda, setAgenda] = useState<AgendaEntry[]>([]);
-  const [notes, setNotes] = useState<StickyNote[]>([]);
+  const [agenda] = useState<AgendaEntry[]>([]);
+  const [notes] = useState<StickyNote[]>([]);
   const [activeView, setActiveView] = useState<'board' | 'agenda' | 'notes' | 'parents' | 'admin'>('board');
   
-  // Modals
   const [isNewChildOpen, setIsNewChildOpen] = useState(false);
   const [newChildData, setNewChildData] = useState({ 
     name: '', age: 6, passion: '', favoriteAnimal: '', dreamJob: '', avatar: PREDEFINED_AVATARS[0], cardBackground: ''
   });
 
-  // --- TIMER LOGIC ---
   useEffect(() => {
     const timer = setInterval(() => {
       setChildren(prev => prev.map(child => {
         if (child.isTimerRunning && child.screenTimeRemaining > 0) {
           const newTime = child.screenTimeRemaining - 1;
-          // Stop timer if it reaches 0
-          return { 
-            ...child, 
-            screenTimeRemaining: newTime, 
-            isTimerRunning: newTime > 0 
-          };
+          return { ...child, screenTimeRemaining: newTime, isTimerRunning: newTime > 0 };
         }
         return child;
       }));
@@ -88,20 +71,19 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // --- INITIALISATION ---
   useEffect(() => {
     if (!supabase) {
       setIsLoading(false);
       return;
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session } }: { data: { session: Session | null } }) => {
       setSession(session);
       if (session) handlePostLogin(session.user.email!);
       else setIsLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
       setSession(session);
       if (session) handlePostLogin(session.user.email!);
       else {
@@ -128,9 +110,8 @@ const App: React.FC = () => {
           screenTimeLimit: c.screen_time_limit || 60,
           screenTimeRemaining: c.screen_time_remaining || 3600,
           isTimerRunning: false,
+          history: c.history || []
         })));
-        setAgenda(data.agenda as any);
-        setNotes(data.notes as any);
         setIsCloudActive(true);
       } else {
         setUser({ email, familyName: "Configuration requise", isAuthenticated: true });
@@ -144,17 +125,12 @@ const App: React.FC = () => {
     }
   };
 
-  // --- ACTIONS HANDLERS ---
   const handleToggleTimer = (childId: string) => {
-    setChildren(prev => prev.map(c => 
-      c.id === childId ? { ...c, isTimerRunning: !c.isTimerRunning } : c
-    ));
+    setChildren(prev => prev.map(c => c.id === childId ? { ...c, isTimerRunning: !c.isTimerRunning } : c));
   };
 
   const handleResetTimer = (childId: string) => {
-    setChildren(prev => prev.map(c => 
-      c.id === childId ? { ...c, screenTimeRemaining: c.screenTimeLimit * 60, isTimerRunning: false } : c
-    ));
+    setChildren(prev => prev.map(c => c.id === childId ? { ...c, screenTimeRemaining: c.screenTimeLimit * 60, isTimerRunning: false } : c));
   };
 
   const handleToggleGage = async (childId: string, gageId: string) => {
@@ -164,20 +140,9 @@ const App: React.FC = () => {
     setChildren(prev => prev.map(c => {
       if (c.id === childId) {
         const alreadyHas = (c.activeGages || []).includes(gageId);
-        const newGages = alreadyHas 
-          ? c.activeGages?.filter(id => id !== gageId) 
-          : [...(c.activeGages || []), gageId];
-        
-        // Appliquer la pénalité de points si on ajoute le gage
+        const newGages = alreadyHas ? c.activeGages?.filter(id => id !== gageId) : [...(c.activeGages || []), gageId];
         const newScore = !alreadyHas && gage.points ? Math.max(0, c.score + gage.points) : c.score;
-        
-        if (supabase) {
-          supabase.from('children').update({ 
-            active_gages: newGages,
-            score: newScore 
-          }).eq('id', childId).then();
-        }
-        
+        if (supabase) supabase.from('children').update({ active_gages: newGages, score: newScore }).eq('id', childId).then();
         return { ...c, activeGages: newGages, score: newScore };
       }
       return c;
@@ -193,15 +158,8 @@ const App: React.FC = () => {
     if (supabase) {
       try {
         await supabase.from('children').update({ score: newScore }).eq('id', childId);
-        await supabase.from('point_history').insert([{ 
-          child_id: childId, 
-          type: points >= 0 ? 'positive' : 'negative', 
-          reason, 
-          points 
-        }]);
-      } catch (err) {
-        console.error("Failed to sync points:", err);
-      }
+        await supabase.from('point_history').insert([{ child_id: childId, type: points >= 0 ? 'positive' : 'negative', reason, points }]);
+      } catch (err) { console.error("Failed to sync points:", err); }
     }
   };
 
@@ -212,32 +170,20 @@ const App: React.FC = () => {
     setIsLoading(true);
     try {
       if (authMode === 'register') {
-        const { error: signUpError } = await supabase.auth.signUp({ 
-          email: authEmail, 
-          password: authPassword,
-        });
+        const { error: signUpError } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
         if (signUpError) throw signUpError;
         await createFamily(authEmail, authFamilyName || "Ma Famille");
       } else {
-        const { error: signInError } = await supabase.auth.signInWithPassword({ 
-          email: authEmail, 
-          password: authPassword 
-        });
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
         if (signInError) throw signInError;
       }
-    } catch (err: any) {
-      setAuthError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
+    } catch (err: any) { setAuthError(err.message); } finally { setIsLoading(false); }
   };
 
   const handleLogout = async () => {
     if (supabase) await supabase.auth.signOut();
     setUser(null);
     setChildren([]);
-    setAgenda([]);
-    setNotes([]);
     setFamilyId(null);
   };
 
@@ -245,9 +191,18 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!newChildData.name.trim() || !familyId) return;
 
-    const newChild: Partial<Child> = {
-      ...newChildData,
+    const tempId = crypto.randomUUID();
+    const newChild: Child = {
+      id: tempId,
+      name: newChildData.name,
+      age: newChildData.age,
+      passion: newChildData.passion,
+      favoriteAnimal: newChildData.favoriteAnimal,
+      dreamJob: newChildData.dreamJob,
+      avatar: newChildData.avatar,
+      cardBackground: newChildData.cardBackground,
       score: 0,
+      history: [],
       dailyChallenges: [],
       personalGoals: [],
       screenTimeLimit: 60,
@@ -256,25 +211,19 @@ const App: React.FC = () => {
       activeGages: [],
     };
 
-    const tempId = crypto.randomUUID();
-    setChildren(prev => [...prev, { ...newChild, id: tempId } as Child]);
+    setChildren(prev => [...prev, newChild]);
     setIsNewChildOpen(false);
 
     if (supabase) {
       const { data, error } = await supabase.from('children').insert([{ 
-        ...newChild, 
-        family_id: familyId,
-        active_gages: [],
-        screen_time_limit: 60,
-        screen_time_remaining: 3600
+        name: newChild.name, age: newChild.age, passion: newChild.passion, favorite_animal: newChild.favoriteAnimal,
+        dream_job: newChild.dreamJob, avatar: newChild.avatar, card_background: newChild.cardBackground, family_id: familyId,
+        score: 0, active_gages: [], screen_time_limit: 60, screen_time_remaining: 3600
       }]).select().single();
-      if (!error) {
-        setChildren(prev => prev.map(c => c.id === tempId ? { ...c, id: data.id } : c));
-      }
+      if (!error) setChildren(prev => prev.map(c => c.id === tempId ? { ...c, id: data.id } : c));
     }
   };
 
-  // --- RENDU ---
   if (isLoading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50">
@@ -295,7 +244,6 @@ const App: React.FC = () => {
             </div>
             <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Family Board</h2>
           </div>
-
           <form onSubmit={handleAuth} className="space-y-5">
             {authError && <p className="text-[11px] font-black uppercase text-rose-600 text-center">{authError}</p>}
             <div className="space-y-4">
@@ -309,7 +257,6 @@ const App: React.FC = () => {
               {authMode === 'login' ? 'Se connecter' : 'Créer un compte'}
             </button>
           </form>
-
           <div className="text-center">
             <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100">
               {authMode === 'login' ? "Nouveau ici ? S'inscrire" : "Déjà membre ? Connexion"}
@@ -339,7 +286,6 @@ const App: React.FC = () => {
           </button>
         </div>
       </header>
-
       <main className="p-6">
         {activeView === 'board' && (
           <div className="space-y-10">
@@ -349,7 +295,6 @@ const App: React.FC = () => {
                 <Plus size={20} /> Enfant
               </button>
             </div>
-            
             <div className="grid grid-cols-1 gap-8">
               {children.length === 0 ? (
                 <div className="bg-white p-12 rounded-[3.5rem] border-4 border-dashed border-slate-100 flex flex-col items-center justify-center text-center space-y-4">
@@ -358,26 +303,12 @@ const App: React.FC = () => {
                 </div>
               ) : (
                 children.map(child => (
-                  <ChildCard 
-                    key={child.id} 
-                    child={child} 
-                    services={config.services} 
-                    gages={config.gages}
-                    onAddPoints={handlePointAction} 
-                    onToggleGage={handleToggleGage} 
-                    onRemoveChild={() => {}} 
-                    onSelect={() => {}} 
-                    onOpenGoals={() => {}} 
-                    onOpenAvatarPicker={() => {}}
-                    onToggleTimer={handleToggleTimer}
-                    onResetTimer={handleResetTimer}
-                  />
+                  <ChildCard key={child.id} child={child} services={config.services} gages={config.gages} onAddPoints={handlePointAction} onToggleGage={handleToggleGage} onRemoveChild={() => {}} onSelect={() => {}} onOpenGoals={() => {}} onOpenAvatarPicker={() => {}} onToggleTimer={handleToggleTimer} onResetTimer={handleResetTimer} />
                 ))
               )}
             </div>
           </div>
         )}
-
         {activeView === 'agenda' && (
            <div className="space-y-6">
              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">L'Agenda</h2>
@@ -388,7 +319,6 @@ const App: React.FC = () => {
              </div>
            </div>
         )}
-
         {activeView === 'notes' && (
            <div className="space-y-6">
              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Notes & Rappels</h2>
@@ -409,7 +339,6 @@ const App: React.FC = () => {
              </div>
            </div>
         )}
-
         {activeView === 'parents' && (
           <div className="space-y-6">
              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Le Coaching</h2>
@@ -431,7 +360,6 @@ const App: React.FC = () => {
              </div>
           </div>
         )}
-
         {activeView === 'admin' && (
           <div className="space-y-6">
              <h2 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Réglages</h2>
@@ -460,7 +388,6 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
-
       <nav className="fixed bottom-0 left-0 right-0 h-24 glass-panel border-t border-slate-200/50 flex items-center justify-between px-6 z-50">
         {[
           {id:'agenda', icon:Calendar, label:'Agenda'},
@@ -477,8 +404,6 @@ const App: React.FC = () => {
           </button>
         ))}
       </nav>
-
-      {/* MODAL AJOUT ENFANT */}
       {isNewChildOpen && (
         <div className="fixed inset-0 z-[120] bg-black/40 backdrop-blur-md flex items-center justify-center p-6">
           <div className="w-full max-w-md bg-white rounded-[3.5rem] p-10 space-y-8 relative shadow-2xl">
