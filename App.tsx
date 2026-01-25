@@ -6,7 +6,8 @@ import {
   Tv, BookOpen, Calendar as CalendarIcon, 
   Monitor, ChevronRight, Heart, LayoutDashboard, 
   Palette, AlertCircle, StickyNote as NoteIcon,
-  Calendar, Mail, LogOut, Cloud, CloudOff, Loader2
+  Calendar, Mail, LogOut, Cloud, CloudOff, Loader2,
+  ShieldAlert
 } from 'lucide-react';
 import { Child, AppConfig, AgendaEntry, StickyNote, UserAccount } from './types';
 import { ChildCard } from './components/ChildCard';
@@ -36,6 +37,7 @@ const DEFAULT_CONFIG: AppConfig = {
 };
 
 const App: React.FC = () => {
+  // --- AUTH & CLOUD STATE ---
   const [user, setUser] = useState<UserAccount | null>(null);
   const [, setSession] = useState<Session | null>(null);
   const [isCloudActive, setIsCloudActive] = useState(false);
@@ -44,20 +46,23 @@ const App: React.FC = () => {
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authFamilyName, setAuthFamilyName] = useState("");
-  const [authError, setAuthError] = useState("");
+  const [authFeedback, setAuthFeedback] = useState<{message: string, type: 'error' | 'success'} | null>(null);
   const [familyId, setFamilyId] = useState<string | null>(null);
 
+  // --- APP STATE ---
   const [config] = useState<AppConfig>(DEFAULT_CONFIG);
   const [children, setChildren] = useState<Child[]>([]);
   const [agenda] = useState<AgendaEntry[]>([]);
   const [notes] = useState<StickyNote[]>([]);
   const [activeView, setActiveView] = useState<'board' | 'agenda' | 'notes' | 'parents' | 'admin'>('board');
   
+  // Modals
   const [isNewChildOpen, setIsNewChildOpen] = useState(false);
   const [newChildData, setNewChildData] = useState({ 
     name: '', age: 6, passion: '', favoriteAnimal: '', dreamJob: '', avatar: PREDEFINED_AVATARS[0], cardBackground: ''
   });
 
+  // --- TIMER LOGIC ---
   useEffect(() => {
     const timer = setInterval(() => {
       setChildren(prev => prev.map(child => {
@@ -71,6 +76,7 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
+  // --- INITIALISATION ---
   useEffect(() => {
     if (!supabase) {
       setIsLoading(false);
@@ -98,7 +104,7 @@ const App: React.FC = () => {
 
   const handlePostLogin = async (email: string) => {
     setIsLoading(true);
-    setAuthError("");
+    setAuthFeedback(null);
     try {
       const data = await fetchFamilyData(email);
       if (data) {
@@ -118,12 +124,61 @@ const App: React.FC = () => {
         setIsCloudActive(false);
       }
     } catch (err: any) {
-      setAuthError(`Erreur Sync: ${err.message}`);
+      setAuthFeedback({ message: `Erreur Sync: ${err.message}`, type: 'error' });
       setIsCloudActive(false);
     } finally {
       setIsLoading(false);
     }
   };
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthFeedback(null);
+    
+    if (!supabase) {
+      setAuthFeedback({ message: "Configuration Supabase manquante dans le fichier .env", type: 'error' });
+      return;
+    }
+
+    if (authMode === 'register' && !authFamilyName.trim()) {
+      setAuthFeedback({ message: "Le nom de la famille est requis", type: 'error' });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      if (authMode === 'register') {
+        const { data, error: signUpError } = await supabase.auth.signUp({ 
+          email: authEmail, 
+          password: authPassword,
+        });
+        
+        if (signUpError) throw signUpError;
+        
+        // Créer la famille même si l'email n'est pas encore confirmé
+        await createFamily(authEmail, authFamilyName || "Ma Famille");
+
+        if (data.user && data.session === null) {
+          setAuthFeedback({ 
+            message: "✅ Compte créé ! Veuillez confirmer votre e-mail pour vous connecter.", 
+            type: 'success' 
+          });
+          setIsLoading(false);
+        }
+      } else {
+        const { error: signInError } = await supabase.auth.signInWithPassword({ 
+          email: authEmail, 
+          password: authPassword 
+        });
+        if (signInError) throw signInError;
+      }
+    } catch (err: any) {
+      setAuthFeedback({ message: err.message, type: 'error' });
+      setIsLoading(false);
+    }
+  };
+
+  // ... (Autres handlers inchangés)
 
   const handleToggleTimer = (childId: string) => {
     setChildren(prev => prev.map(c => c.id === childId ? { ...c, isTimerRunning: !c.isTimerRunning } : c));
@@ -161,23 +216,6 @@ const App: React.FC = () => {
         await supabase.from('point_history').insert([{ child_id: childId, type: points >= 0 ? 'positive' : 'negative', reason, points }]);
       } catch (err) { console.error("Failed to sync points:", err); }
     }
-  };
-
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError("");
-    if (!supabase) return;
-    setIsLoading(true);
-    try {
-      if (authMode === 'register') {
-        const { error: signUpError } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
-        if (signUpError) throw signUpError;
-        await createFamily(authEmail, authFamilyName || "Ma Famille");
-      } else {
-        const { error: signInError } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
-        if (signInError) throw signInError;
-      }
-    } catch (err: any) { setAuthError(err.message); } finally { setIsLoading(false); }
   };
 
   const handleLogout = async () => {
@@ -224,11 +262,11 @@ const App: React.FC = () => {
     }
   };
 
-  if (isLoading) {
+  if (isLoading && !authFeedback) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50">
         <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mb-4" />
-        <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Initialisation...</p>
+        <p className="text-xs font-black uppercase text-slate-400 tracking-widest">Chargement...</p>
       </div>
     );
   }
@@ -238,28 +276,55 @@ const App: React.FC = () => {
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6">
         <div className="w-full max-w-md bg-white rounded-[3.5rem] p-10 shadow-2xl space-y-8 relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-2 dynamic-primary-bg opacity-20"></div>
+          
           <div className="text-center space-y-4">
             <div className="inline-block p-5 bg-indigo-50 text-indigo-600 rounded-[2.5rem] mb-2 shadow-inner">
               <Sparkles size={40} className="animate-pulse" />
             </div>
             <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Family Board</h2>
           </div>
-          <form onSubmit={handleAuth} className="space-y-5">
-            {authError && <p className="text-[11px] font-black uppercase text-rose-600 text-center">{authError}</p>}
-            <div className="space-y-4">
-              <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Email" />
-              {authMode === 'register' && (
-                <input required type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Nom de famille" />
-              )}
-              <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none" placeholder="Mot de passe" />
+
+          {!supabase && (
+            <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100 flex items-start gap-3">
+              <ShieldAlert className="text-rose-500 shrink-0" size={20} />
+              <p className="text-[10px] font-bold text-rose-700 uppercase">Config Supabase manquante. Vérifiez votre fichier .env</p>
             </div>
-            <button type="submit" className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all">
-              {authMode === 'login' ? 'Se connecter' : 'Créer un compte'}
+          )}
+
+          <form onSubmit={handleAuth} className="space-y-5">
+            {authFeedback && (
+              <div className={`p-4 rounded-2xl text-[11px] font-black uppercase text-center border animate-in fade-in zoom-in ${authFeedback.type === 'error' ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+                {authFeedback.message}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div className="relative">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="E-mail" />
+              </div>
+
+              {authMode === 'register' && (
+                <div className="relative animate-in slide-in-from-top-2">
+                  <Users className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input required type="text" value={authFamilyName} onChange={e => setAuthFamilyName(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="Nom de votre famille" />
+                </div>
+              )}
+
+              <div className="relative">
+                <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="Mot de passe" />
+              </div>
+            </div>
+
+            <button type="submit" disabled={!supabase} className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:grayscale">
+              {authMode === 'login' ? 'Se connecter' : 'Créer mon compte'}
             </button>
           </form>
+
           <div className="text-center">
-            <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100">
-              {authMode === 'login' ? "Nouveau ici ? S'inscrire" : "Déjà membre ? Connexion"}
+            <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthFeedback(null); }} className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100 hover:text-indigo-800 transition-colors">
+              {authMode === 'login' ? "Nouveau ici ? S'inscrire" : "Déjà un compte ? Connexion"}
             </button>
           </div>
         </div>
@@ -267,6 +332,7 @@ const App: React.FC = () => {
     );
   }
 
+  // ... (Rendu principal inchangé)
   return (
     <div className="min-h-screen pb-24" style={{ backgroundColor: config.theme.backgroundColor }}>
       <header className="glass-panel sticky top-0 z-40 px-6 py-5 flex items-center justify-between border-b border-slate-200/50">
