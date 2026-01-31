@@ -7,7 +7,7 @@ import {
   Monitor, ChevronRight, Heart, LayoutDashboard, 
   Palette, AlertCircle, StickyNote as NoteIcon,
   Calendar, Mail, LogOut, Cloud, CloudOff, Loader2,
-  ShieldAlert
+  ShieldAlert, CheckCircle2
 } from 'lucide-react';
 import { Child, AppConfig, AgendaEntry, StickyNote, UserAccount } from './types';
 import { ChildCard } from './components/ChildCard';
@@ -21,7 +21,7 @@ const PREDEFINED_AVATARS = [
 ];
 
 const DEFAULT_CONFIG: AppConfig = {
-  appName: "Family Board Pro",
+  appName: "Family Team",
   theme: { primaryColor: '#6366f1', backgroundColor: '#fdfbff', borderRadius: '2.5rem' },
   services: [
     { id: 's1', name: 'Débarrassage', points: 2, iconName: 'Utensils' },
@@ -136,18 +136,15 @@ const App: React.FC = () => {
     setAuthFeedback(null);
     
     if (!supabase) {
-      setAuthFeedback({ message: "Configuration Supabase manquante dans le fichier .env", type: 'error' });
-      return;
-    }
-
-    if (authMode === 'register' && !authFamilyName.trim()) {
-      setAuthFeedback({ message: "Le nom de la famille est requis", type: 'error' });
+      setAuthFeedback({ message: "La connexion à Supabase a échoué. Vérifiez vos clés API.", type: 'error' });
       return;
     }
 
     setIsLoading(true);
     try {
       if (authMode === 'register') {
+        if (!authFamilyName.trim()) throw new Error("Le nom de la famille est obligatoire.");
+        
         const { data, error: signUpError } = await supabase.auth.signUp({ 
           email: authEmail, 
           password: authPassword,
@@ -155,15 +152,21 @@ const App: React.FC = () => {
         
         if (signUpError) throw signUpError;
         
-        // Créer la famille même si l'email n'est pas encore confirmé
-        await createFamily(authEmail, authFamilyName || "Ma Famille");
+        // Tenter de créer la famille
+        try {
+          await createFamily(authEmail, authFamilyName);
+        } catch (createErr) {
+          console.warn("La création de la famille en DB a échoué (vérifiez vos règles RLS), mais le compte est créé.", createErr);
+        }
 
         if (data.user && data.session === null) {
           setAuthFeedback({ 
-            message: "✅ Compte créé ! Veuillez confirmer votre e-mail pour vous connecter.", 
+            message: "📧 Super ! Vérifiez votre boîte mail pour confirmer votre compte.", 
             type: 'success' 
           });
-          setIsLoading(false);
+        } else if (data.session) {
+          // Connexion auto après signup si activée dans Supabase
+          handlePostLogin(authEmail);
         }
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({ 
@@ -174,11 +177,10 @@ const App: React.FC = () => {
       }
     } catch (err: any) {
       setAuthFeedback({ message: err.message, type: 'error' });
+    } finally {
       setIsLoading(false);
     }
   };
-
-  // ... (Autres handlers inchangés)
 
   const handleToggleTimer = (childId: string) => {
     setChildren(prev => prev.map(c => c.id === childId ? { ...c, isTimerRunning: !c.isTimerRunning } : c));
@@ -223,6 +225,7 @@ const App: React.FC = () => {
     setUser(null);
     setChildren([]);
     setFamilyId(null);
+    setAuthFeedback(null);
   };
 
   const handleAddChildForm = async (e: React.FormEvent) => {
@@ -281,19 +284,21 @@ const App: React.FC = () => {
             <div className="inline-block p-5 bg-indigo-50 text-indigo-600 rounded-[2.5rem] mb-2 shadow-inner">
               <Sparkles size={40} className="animate-pulse" />
             </div>
-            <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Family Board</h2>
+            <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Family Team</h2>
+            <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em]">Ensemble pour mieux grandir</p>
           </div>
 
           {!supabase && (
             <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100 flex items-start gap-3">
               <ShieldAlert className="text-rose-500 shrink-0" size={20} />
-              <p className="text-[10px] font-bold text-rose-700 uppercase">Config Supabase manquante. Vérifiez votre fichier .env</p>
+              <p className="text-[10px] font-bold text-rose-700 uppercase">Config Supabase manquante. Vérifiez vos variables d'environnement.</p>
             </div>
           )}
 
           <form onSubmit={handleAuth} className="space-y-5">
             {authFeedback && (
-              <div className={`p-4 rounded-2xl text-[11px] font-black uppercase text-center border animate-in fade-in zoom-in ${authFeedback.type === 'error' ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+              <div className={`p-4 rounded-2xl text-[11px] font-black uppercase text-center border animate-in fade-in zoom-in flex items-center justify-center gap-2 ${authFeedback.type === 'error' ? 'bg-rose-50 text-rose-600 border-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
+                {authFeedback.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
                 {authFeedback.message}
               </div>
             )}
@@ -317,14 +322,14 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <button type="submit" disabled={!supabase} className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:grayscale">
-              {authMode === 'login' ? 'Se connecter' : 'Créer mon compte'}
+            <button type="submit" disabled={!supabase || isLoading} className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:grayscale flex items-center justify-center gap-2">
+              {isLoading ? <Loader2 className="animate-spin" size={20} /> : (authMode === 'login' ? 'Se connecter' : 'Créer mon compte')}
             </button>
           </form>
 
           <div className="text-center">
             <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthFeedback(null); }} className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100 hover:text-indigo-800 transition-colors">
-              {authMode === 'login' ? "Nouveau ici ? S'inscrire" : "Déjà un compte ? Connexion"}
+              {authMode === 'login' ? "Pas encore de compte ? S'inscrire" : "Déjà membre ? Connexion"}
             </button>
           </div>
         </div>
@@ -332,7 +337,6 @@ const App: React.FC = () => {
     );
   }
 
-  // ... (Rendu principal inchangé)
   return (
     <div className="min-h-screen pb-24" style={{ backgroundColor: config.theme.backgroundColor }}>
       <header className="glass-panel sticky top-0 z-40 px-6 py-5 flex items-center justify-between border-b border-slate-200/50">
