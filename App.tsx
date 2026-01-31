@@ -7,7 +7,7 @@ import {
   Monitor, ChevronRight, Heart, LayoutDashboard, 
   Palette, AlertCircle, StickyNote as NoteIcon,
   Calendar, Mail, LogOut, Cloud, CloudOff, Loader2,
-  ShieldAlert, CheckCircle2
+  ShieldAlert, CheckCircle2, ArrowRight, ShieldCheck, Lock
 } from 'lucide-react';
 import { Child, AppConfig, AgendaEntry, StickyNote, UserAccount } from './types';
 import { ChildCard } from './components/ChildCard';
@@ -42,12 +42,15 @@ const App: React.FC = () => {
   const [, setSession] = useState<Session | null>(null);
   const [isCloudActive, setIsCloudActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authConfirmPassword, setAuthConfirmPassword] = useState("");
   const [authFamilyName, setAuthFamilyName] = useState("");
   const [authFeedback, setAuthFeedback] = useState<{message: string, type: 'error' | 'success'} | null>(null);
   const [familyId, setFamilyId] = useState<string | null>(null);
+  const [isGdprOpen, setIsGdprOpen] = useState(false);
 
   // --- APP STATE ---
   const [config] = useState<AppConfig>(DEFAULT_CONFIG);
@@ -56,13 +59,11 @@ const App: React.FC = () => {
   const [notes] = useState<StickyNote[]>([]);
   const [activeView, setActiveView] = useState<'board' | 'agenda' | 'notes' | 'parents' | 'admin'>('board');
   
-  // Modals
   const [isNewChildOpen, setIsNewChildOpen] = useState(false);
   const [newChildData, setNewChildData] = useState({ 
     name: '', age: 6, passion: '', favoriteAnimal: '', dreamJob: '', avatar: PREDEFINED_AVATARS[0], cardBackground: ''
   });
 
-  // --- TIMER LOGIC ---
   useEffect(() => {
     const timer = setInterval(() => {
       setChildren(prev => prev.map(child => {
@@ -76,7 +77,6 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // --- INITIALISATION ---
   useEffect(() => {
     if (!supabase) {
       setIsLoading(false);
@@ -120,7 +120,7 @@ const App: React.FC = () => {
         })));
         setIsCloudActive(true);
       } else {
-        setUser({ email, familyName: "Configuration requise", isAuthenticated: true });
+        setUser({ email, familyName: "Famille à configurer", isAuthenticated: true });
         setIsCloudActive(false);
       }
     } catch (err: any) {
@@ -136,14 +136,19 @@ const App: React.FC = () => {
     setAuthFeedback(null);
     
     if (!supabase) {
-      setAuthFeedback({ message: "La connexion à Supabase a échoué. Vérifiez vos clés API.", type: 'error' });
+      setAuthFeedback({ message: "Erreur : La connexion avec Supabase n'est pas configurée.", type: 'error' });
+      return;
+    }
+
+    if (authMode === 'register' && authPassword !== authConfirmPassword) {
+      setAuthFeedback({ message: "Les mots de passe ne correspondent pas.", type: 'error' });
       return;
     }
 
     setIsLoading(true);
     try {
       if (authMode === 'register') {
-        if (!authFamilyName.trim()) throw new Error("Le nom de la famille est obligatoire.");
+        if (!authFamilyName.trim()) throw new Error("Veuillez donner un nom à votre équipe familiale.");
         
         const { data, error: signUpError } = await supabase.auth.signUp({ 
           email: authEmail, 
@@ -152,21 +157,17 @@ const App: React.FC = () => {
         
         if (signUpError) throw signUpError;
         
-        // Tenter de créer la famille
         try {
           await createFamily(authEmail, authFamilyName);
         } catch (createErr) {
-          console.warn("La création de la famille en DB a échoué (vérifiez vos règles RLS), mais le compte est créé.", createErr);
+          console.warn("La table families est inaccessible.", createErr);
         }
 
         if (data.user && data.session === null) {
           setAuthFeedback({ 
-            message: "📧 Super ! Vérifiez votre boîte mail pour confirmer votre compte.", 
+            message: "📧 Super ! Votre équipe est prête. Vérifiez vos e-mails pour valider.", 
             type: 'success' 
           });
-        } else if (data.session) {
-          // Connexion auto après signup si activée dans Supabase
-          handlePostLogin(authEmail);
         }
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({ 
@@ -285,15 +286,8 @@ const App: React.FC = () => {
               <Sparkles size={40} className="animate-pulse" />
             </div>
             <h2 className="text-4xl font-black uppercase tracking-tighter text-slate-900">Family Team</h2>
-            <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em]">Ensemble pour mieux grandir</p>
+            <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.2em]">Votre projet de famille commence ici</p>
           </div>
-
-          {!supabase && (
-            <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100 flex items-start gap-3">
-              <ShieldAlert className="text-rose-500 shrink-0" size={20} />
-              <p className="text-[10px] font-bold text-rose-700 uppercase">Config Supabase manquante. Vérifiez vos variables d'environnement.</p>
-            </div>
-          )}
 
           <form onSubmit={handleAuth} className="space-y-5">
             {authFeedback && (
@@ -304,11 +298,6 @@ const App: React.FC = () => {
             )}
 
             <div className="space-y-4">
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="E-mail" />
-              </div>
-
               {authMode === 'register' && (
                 <div className="relative animate-in slide-in-from-top-2">
                   <Users className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
@@ -317,22 +306,96 @@ const App: React.FC = () => {
               )}
 
               <div className="relative">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                <input required type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="E-mail" />
+              </div>
+
+              <div className="relative">
                 <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
                 <input required type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="Mot de passe" />
               </div>
+
+              {authMode === 'register' && (
+                <div className="relative animate-in slide-in-from-top-2">
+                  <Settings className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+                  <input required type="password" value={authConfirmPassword} onChange={e => setAuthConfirmPassword(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-slate-50 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all" placeholder="Confirmer le mot de passe" />
+                </div>
+              )}
             </div>
 
-            <button type="submit" disabled={!supabase || isLoading} className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:grayscale flex items-center justify-center gap-2">
-              {isLoading ? <Loader2 className="animate-spin" size={20} /> : (authMode === 'login' ? 'Se connecter' : 'Créer mon compte')}
+            <button type="submit" disabled={isLoading} className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2">
+              {isLoading ? <Loader2 className="animate-spin" size={20} /> : (authMode === 'register' ? 'Créer mon équipe ✨' : 'Me connecter')}
             </button>
           </form>
 
-          <div className="text-center">
-            <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthFeedback(null); }} className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100 hover:text-indigo-800 transition-colors">
-              {authMode === 'login' ? "Pas encore de compte ? S'inscrire" : "Déjà membre ? Connexion"}
+          <div className="text-center pt-2 space-y-4">
+            <button 
+              onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthFeedback(null); }} 
+              className="text-[11px] font-black uppercase text-indigo-600 border-b-2 border-indigo-100 hover:text-indigo-800 transition-colors flex items-center justify-center gap-2 mx-auto"
+            >
+              {authMode === 'login' ? (
+                <>Pas encore de compte ? Inscription <ArrowRight size={14}/></>
+              ) : (
+                <>Déjà membre ? Connexion <ArrowRight size={14}/></>
+              )}
+            </button>
+
+            <button 
+              onClick={() => setIsGdprOpen(true)}
+              className="text-[9px] font-black uppercase text-slate-300 hover:text-slate-500 transition-colors flex items-center justify-center gap-1.5 mx-auto pt-2"
+            >
+              <ShieldCheck size={12}/> Règles RGPD & Confidentialité
             </button>
           </div>
         </div>
+
+        {/* Modal RGPD */}
+        {isGdprOpen && (
+          <div className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+            <div className="w-full max-w-lg bg-white rounded-[3.5rem] p-10 space-y-8 relative shadow-2xl animate-in zoom-in duration-300">
+              <button onClick={() => setIsGdprOpen(false)} className="absolute top-8 right-8 p-3 bg-slate-100 rounded-full text-slate-400 hover:text-rose-500 transition-colors">
+                <X size={24}/>
+              </button>
+              
+              <div className="flex items-center gap-4 text-indigo-600">
+                <div className="p-4 bg-indigo-50 rounded-3xl"><ShieldCheck size={32}/></div>
+                <h2 className="text-2xl font-black uppercase tracking-tighter text-slate-800">Confidentialité</h2>
+              </div>
+
+              <div className="space-y-6 text-slate-600 leading-relaxed font-medium">
+                <p>
+                  Chez <strong className="text-indigo-600 uppercase font-black">Family Team</strong>, la protection de votre foyer est notre priorité. Voici nos engagements :
+                </p>
+                
+                <div className="space-y-4">
+                  <div className="flex gap-4">
+                    <div className="w-2 h-2 mt-2 bg-emerald-500 rounded-full shrink-0"></div>
+                    <p className="text-sm"><span className="font-bold text-slate-800">Pas d'analyse :</span> Vos données (prénoms, scores, notes) ne font l'objet d'aucune analyse comportementale ou publicitaire.</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="w-2 h-2 mt-2 bg-emerald-500 rounded-full shrink-0"></div>
+                    <p className="text-sm"><span className="font-bold text-slate-800">Aucun transfert :</span> Nous ne vendons et ne transférons aucune information à des tiers.</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="w-2 h-2 mt-2 bg-emerald-500 rounded-full shrink-0"></div>
+                    <p className="text-sm"><span className="font-bold text-slate-800">Utilité technique :</span> Vos informations sont stockées uniquement pour permettre le fonctionnement de l'application et la synchronisation entre vos appareils familiaux.</p>
+                  </div>
+                </div>
+
+                <p className="text-[11px] bg-slate-50 p-4 rounded-2xl italic">
+                  Toutes les données sont chiffrées et sécurisées via notre infrastructure Supabase. Vous restez maître de vos informations à tout moment.
+                </p>
+              </div>
+
+              <button 
+                onClick={() => setIsGdprOpen(false)} 
+                className="w-full py-5 rounded-[2rem] font-black uppercase shadow-xl dynamic-primary-bg text-white hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                J'ai compris ✨
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -343,7 +406,7 @@ const App: React.FC = () => {
         <div className="flex items-center gap-4">
           <div className="dynamic-primary-bg p-3 rounded-2xl shadow-lg text-white"><Sparkles size={24} /></div>
           <div>
-            <h1 className="text-lg font-black uppercase tracking-tight text-slate-800">{config.appName}</h1>
+            <h1 className="text-lg font-black uppercase tracking-tight text-slate-800">Family Team</h1>
             <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{user?.familyName}</p>
           </div>
         </div>
